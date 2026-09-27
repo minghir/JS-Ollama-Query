@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="ro">
+<head>
+<meta charset="UTF-8">
+<title>Ollama WebUI</title>
+
+<style>
+  body {
+    background: #1e1e1e;
+    color: #e0e0e0;
+    font-family: Arial, sans-serif;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+  }
+
+  #modelBar {
+    background: #111;
+    padding: 15px 20px;
+    border-bottom: 1px solid #333;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  #modelBar label {
+    font-size: 16px;
+    color: #4a8cff;
+  }
+
+  #modelSelect {
+    background: #222;
+    color: #fff;
+    border: 1px solid #444;
+    padding: 8px;
+    border-radius: 6px;
+    font-size: 15px;
+  }
+
+  #chat {
+    flex: 1;
+    overflow-y: auto;
+    padding: 20px;
+    white-space: pre-wrap;
+    font-size: 16px;
+  }
+
+  #inputBar {
+    display: flex;
+    padding: 15px;
+    background: #111;
+    border-top: 1px solid #333;
+  }
+
+  #prompt {
+    flex: 1;
+    padding: 12px;
+    border-radius: 10px;
+    border: none;
+    background: #2a2a2a;
+    color: #fff;
+    font-size: 16px;
+  }
+
+  #sendBtn, #resetBtn {
+    margin-left: 10px;
+    padding: 12px 20px;
+    border-radius: 10px;
+    border: none;
+    background: #4a8cff;
+    color: white;
+    font-size: 16px;
+    cursor: pointer;
+  }
+
+  #sendBtn:hover, #resetBtn:hover {
+    background: #3a78e6;
+  }
+</style>
+</head>
+
+<body>
+
+<!-- Bara de modele -->
+<div id="modelBar">
+  <label for="modelSelect">Model:</label>
+  <select id="modelSelect">
+    <option value="qwen2.5:14b" selected>Qwen 2.5 14B – Programare</option>
+    <option value="qwen2.5">Qwen 2.5 7B – Rapid</option>
+    <option value="phi3.5">Phi 3.5 – Explicații</option>
+    <option value="gemma2:9b" selected>Gemma2 9B – Română</option>
+    <option value="mistral">Mistral – Logic</option>
+    <option value="llama3.2">LLaMA 3.2 – Viteză</option>
+    <option value="fimbulvetr:latest">Fimbulvetr – Creativ</option>
+    <option value="echocrypt-gm:latest">Echocrypt GM – Experimental</option>
+  </select>
+
+  <button id="resetBtn" onclick="resetChat()">Resetare</button>
+</div>
+
+<!-- Chat -->
+<div id="chat"></div>
+
+<!-- Input -->
+<div id="inputBar">
+  <input id="prompt" type="text" placeholder="Scrie ceva pentru model..." />
+  <button id="sendBtn" onclick="send()">Trimite</button>
+</div>
+
+<script>
+let history = "";
+
+// === ÎNCARCĂ ISTORICUL DIN SQLITE ===
+async function loadHistory() {
+    const chat = document.getElementById("chat");
+
+    try {
+        const response = await fetch("http://localhost:3000/api/history");
+        const rows = await response.json();
+
+        rows.forEach(row => {
+            chat.innerHTML += "<b>Tu:</b> " + row.prompt + "\n\n<b>" + row.model + ":</b> " + row.reply + "\n\n";
+            history += "\nTu: " + row.prompt + "\nModel: " + row.reply;
+        });
+
+        chat.scrollTop = chat.scrollHeight;
+    } catch (e) {
+        console.log("Nu s-a putut încărca istoricul.");
+    }
+}
+
+loadHistory();
+
+// === TRIMITERE MESAJ ===
+async function send() {
+  const promptInput = document.getElementById("prompt");
+  const prompt = promptInput.value.trim();
+  if (!prompt) return;
+
+  const chat = document.getElementById("chat");
+  const model = document.getElementById("modelSelect").value;
+
+  chat.innerHTML += "<b>Tu:</b> " + prompt + "\n\n<b>" + model + ":</b> ";
+  chat.scrollTop = chat.scrollHeight;
+  promptInput.value = "";
+
+  const fullPrompt = history + "\nTu: " + prompt + "\nModel:";
+
+  const response = await fetch("http://localhost:3000/api/generate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: model,
+      prompt: fullPrompt
+    })
+  });
+
+  const reader = response.body.getReader();
+const decoder = new TextDecoder();
+let modelReply = "";
+let buffer = "";
+let depth = 0;
+let jsonStart = -1;
+
+while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+
+    const chunk = decoder.decode(value);
+    buffer += chunk;
+
+    for (let i = 0; i < buffer.length; i++) {
+        if (buffer[i] === "{") {
+            if (depth === 0) jsonStart = i;
+            depth++;
+        } else if (buffer[i] === "}") {
+            depth--;
+            if (depth === 0 && jsonStart !== -1) {
+                const jsonText = buffer.slice(jsonStart, i + 1);
+
+                try {
+                    const json = JSON.parse(jsonText);
+
+                    if (json.response) {
+                        modelReply += json.response;
+                        chat.innerHTML += json.response;
+                    }
+                } catch (e) {
+                    console.log("JSON invalid:", jsonText);
+                }
+
+                buffer = buffer.slice(i + 1);
+                i = -1;
+                jsonStart = -1;
+            }
+        }
+    }
+
+    chat.scrollTop = chat.scrollHeight;
+}
+
+
+  // dacă a rămas ceva în buffer (ultimul JSON fără \n)
+  const lastLine = buffer.trim();
+  if (lastLine) {
+      try {
+          const json = JSON.parse(lastLine);
+          if (json.response) {
+              modelReply += json.response;
+              chat.innerHTML += json.response;
+          }
+      } catch (e) {
+          console.log("Eroare la parsarea ultimei linii:", lastLine);
+      }
+  }
+
+  chat.innerHTML += "\n\n";
+
+  // actualizăm istoricul în RAM
+  history += "\nTu: " + prompt + "\nModel: " + modelReply;
+
+  // limităm istoricul
+  const maxHistoryLength = 20000;
+  if (history.length > maxHistoryLength) {
+      history = history.slice(history.length - maxHistoryLength);
+  }
+
+  // salvăm în SQLite
+  fetch("http://localhost:3000/api/save", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+          prompt: prompt,
+          reply: modelReply,
+          model: model
+      })
+  });
+}
+
+// ENTER trimite
+document.getElementById("prompt").addEventListener("keydown", function(e) {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    send();
+  }
+});
+
+// Resetare conversație
+function resetChat() {
+    history = "";
+    document.getElementById("chat").innerHTML = "";
+}
+</script>
+
+
+</body>
+</html>
